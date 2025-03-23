@@ -1,0 +1,135 @@
+name: Terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        environment: [dev]
+        # Add more environments as needed: [dev, staging, prod]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.0.0
+      
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+      
+      - name: Terraform Init
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init -backend=false
+      
+      - name: Terraform Validate
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform validate
+  
+  plan:
+    name: Plan
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    strategy:
+      matrix:
+        environment: [dev]
+        # Add more environments as needed: [dev, staging, prod]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.0.0
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+      
+      - name: Terraform Init
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init
+      
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform plan -no-color -input=false
+        continue-on-error: true
+      
+      - name: Comment Plan Output
+        uses: actions/github-script@v6
+        if: github.event_name == 'pull_request'
+        env:
+          PLAN: "${{ steps.plan.outputs.stdout }}"
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Plan for \`${{ matrix.environment }}\` environment
+            
+            <details><summary>Show Plan</summary>
+            
+            \`\`\`terraform
+            ${process.env.PLAN}
+            \`\`\`
+            
+            </details>
+            
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+      
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+  
+  apply:
+    name: Apply
+    needs: [validate]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    strategy:
+      matrix:
+        environment: [dev]
+        # Add more environments as needed: [dev, staging, prod]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.0.0
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+      
+      - name: Terraform Init
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform init
+      
+      - name: Terraform Apply
+        run: |
+          cd environments/${{ matrix.environment }}
+          terraform apply -auto-approve -input=false
